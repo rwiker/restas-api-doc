@@ -10,7 +10,15 @@
               for content-type = (gethash :content-type traits)
               for template = (gethash :template traits)
               collect (list template method content-type documentation))
-        #'string<= :key #'car))
+        (lambda (a b)
+          (cond ((string< (first a) (first b))
+                 a)
+                ((string> (first a) (first b))
+                 b)
+                (t
+                 (if (string>= (second a) (second b))
+                   a
+                   b))))))
 
 (defun collect-api-doc/vhost (host port)
   (let ((vhost (find-vhost (cons host port))))
@@ -31,10 +39,6 @@
   (with-output-to-string (s)
     (3bmd:parse-string-and-print-to-stream string s)))
 
-(defun encode-url-to-stream (stream url colon-p at-p)
-  (declare (ignore colon-p at-p))
-  (cl-base64:string-to-base64-stream url stream :uri t))
-
 (defvar *doc-collection* nil)
 
 (defun get-doc-collection ()
@@ -49,12 +53,15 @@
        (dolist (module doc)
          (destructuring-bind (package documentation routes)
              module
-           (format stream "#### ~a~%~%~a~%~%~{* [`/~a`](/api-doc/route=('~:*~/restas-api-doc::encode-url-to-stream/'))~^~%~}"
+           (format stream "#### Module ~a~%~%~a~%~%"
                    (string-downcase (package-name package))
-                   documentation
-                   (mapcar (lambda (route-info)
-                             (first route-info))
-                           routes))))))))
+                   documentation)
+           (dolist (route routes)
+             (destructuring-bind (template method content-type documentation)
+                 route
+               (declare (ignore content-type documentation))
+               (let ((doc-uri (format nil "~a/~a" method (cl-base64:string-to-base64-string template :uri t))))
+                 (format stream "* ~a [/~a](~a)~%" method template doc-uri))))))))))
 
 (defmacro with-page ((&key title) &body body)
   `(spinneret:with-html-string
@@ -70,13 +77,16 @@
       (dolist (module doc)
         (destructuring-bind (package documentation routes)
             module
-          (:h4 (string-downcase (package-name package)))
+          (:h4 "Module" (string-downcase (package-name package)))
           (:p (if documentation (:raw (markdown documentation) "")))
           (:ul 
            (dolist (route routes)
-             (let ((url (first route)))
-               (:li (:a :href (format nil "/api-doc/route=('~a')" (cl-base64:string-to-base64-string url :uri t))
-                     (concatenate 'string "/" url)))))))))))
+             (destructuring-bind (template method content-type documentation)
+                 route
+               (declare (ignore content-type documentation))
+               (:li (:span method " ")
+                    (:a :href (format nil "~a/~a" method (cl-base64:string-to-base64-string template :uri t))
+                        (concatenate 'string "/" template)))))))))))
 
 (defvar *render-index-fun* 'render-index/markdown)
 
@@ -84,32 +94,33 @@
   "Index page for the REST API documentation."
   (funcall *render-index-fun*))
 
-(defun render-route/markdown (route)
-  (let ((doc (get-doc-collection))
-        (template #+nil (reduce (lambda (a b) (concatenate 'string a "/" b)) route)
-                  #-nil route))
-    (let ((route-info
-           (loop for module-info in doc
-                 for module-routes = (third module-info)
-                 for route-info = (find template module-routes  :test #'string= :key #'first)
-                 when route-info
-                 return route-info)))
+(defun get-route-info (doc method template)
+  (loop for module-info in doc
+        for module-routes = (third module-info)
+        for route-info = (find-if (lambda (item)
+                                    (destructuring-bind (r-template r-method r-content-type r-documentation)
+                                        item
+                                      (declare (ignore r-content-type r-documentation))
+                                      (when
+                                          (and (string= method r-method)
+                                               (string= template r-template))
+                                        item)))
+                                  module-routes)
+        when route-info
+        return route-info))
+
+(defun render-route/markdown (method template)
+  (let ((doc (get-doc-collection)))
+    (let ((route-info (get-route-info doc method template)))
       (destructuring-bind (template method content-type documentation)
           route-info
         (markdown
          (format nil "#### Route:~%~%`~a`~%~%##### Method:~%~%~a~%~%##### Returns:~%~%~a~%~%##### Description:~%~%~a"
                  template method content-type (or documentation "")))))))
 
-(defun render-route/spinneret (route)
-  (let ((doc (get-doc-collection))
-        (template #+nil (reduce (lambda (a b) (concatenate 'string a "/" b)) route)
-                  #-nil route))
-    (let ((route-info
-           (loop for module-info in doc
-                 for module-routes = (third module-info)
-                 for route-info = (find template module-routes  :test #'string= :key #'first)
-                 when route-info
-                 return route-info)))
+(defun render-route/spinneret (method template)
+  (let ((doc (get-doc-collection)))
+    (let ((route-info (get-route-info doc method template)))
       (destructuring-bind (template method content-type documentation)
           route-info
         (with-page (:title (format nil "Route: ~a" template))
@@ -124,10 +135,15 @@
 
 (defvar *render-route-fun* 'render-route/spinneret)
 
-(define-route api-doc/* ("route=(':(route)')")
+(define-route api-doc/* ("/:(method)/:(route)")
   (:sift-variables (route (lambda (route) (cl-base64:base64-string-to-string route :uri t))))
   "Handler for documentation for specific REST API endpoints."
-  (if (null route)
-    (funcall *render-index-fun*)
-    (funcall *render-route-fun* route)))
+  (funcall *render-route-fun* method route))
 
+#||
+(setf *render-index-fun* 'render-index/markdown
+      *render-route-fun* 'render-route/markdown)
+(setf *render-index-fun* 'render-index/spinneret
+      *render-route-fun* 'render-route/spinneret)
+
+||#
