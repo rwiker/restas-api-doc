@@ -63,6 +63,7 @@
                (let ((doc-uri (format nil "~a/~a" method (cl-base64:string-to-base64-string template :uri t))))
                  (format stream "* ~a [/~a](~a)~%" method template doc-uri))))))))))
 
+#+nil
 (defmacro with-page ((&key title) &body body)
   `(spinneret:with-html-string
      (:doctype)
@@ -71,6 +72,7 @@
        (:title ,title))
       (:body ,@body))))
 
+#+nil
 (defun render-index/spinneret ()
   (let ((doc (get-doc-collection)))
     (with-page (:title "API Index")
@@ -118,6 +120,7 @@
          (format nil "#### Route:~%~%`~a`~%~%##### Method:~%~%~a~%~%##### Returns:~%~%~a~%~%##### Description:~%~%~a"
                  template method content-type (or documentation "")))))))
 
+#+nil
 (defun render-route/spinneret (method template)
   (let ((doc (get-doc-collection)))
     (let ((route-info (get-route-info doc method template)))
@@ -133,7 +136,7 @@
           (:h5 "Description:")
           (:p (if documentation (:raw (markdown documentation)) "")))))))
 
-(defvar *render-route-fun* 'render-route/spinneret)
+(defvar *render-route-fun* 'render-route/markdown)
 
 (define-route api-doc/* ("/:(method)/:(route)")
   (:sift-variables (route (lambda (route) (cl-base64:base64-string-to-string route :uri t))))
