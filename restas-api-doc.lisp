@@ -25,23 +25,32 @@ parameters.")
               (compile nil declaration)
               declaration))))
 
+(defun route-compare (a b)
+  (destructuring-bind (template-a method-a &rest rest-a)
+      a
+    (declare (ignore rest-a))
+    (destructuring-bind (template-b method-b &rest rest-b)
+        b
+      (declare (ignore rest-b))
+      (cond ((string-lessp template-a template-b)
+             t)
+            ((and (string-equal template-b template-a)
+                  (string-lessp (string method-a) (string method-b)))
+             t)
+            (t
+             nil)))))
+
+(defun sort-route-data (route-data)
+  (sort route-data 'route-compare))
+
 (defun collect-route-info (routes-traits)
-  (sort (loop for symbol being the hash-key of routes-traits
+  (loop for symbol being the hash-key of routes-traits
               using (hash-value traits)
               for documentation = (documentation symbol 'function)
               for method = (gethash :method traits)
               for content-type = (gethash :content-type traits)
               for template = (gethash :template traits)
-              collect (list template method content-type documentation symbol))
-        (lambda (a b)
-          (cond ((string< (first a) (first b))
-                 a)
-                ((string> (first a) (first b))
-                 b)
-                (t
-                 (if (string>= (string (second a)) (string (second b)))
-                   a
-                   b))))))
+              collect (list template method content-type documentation symbol)))
 
 (defun collect-api-doc/vhost (host port)
   (let ((vhost (find-vhost (cons host port))))
@@ -79,7 +88,7 @@ parameters.")
            (format stream "#### Module ~a~%~%~a~%~%"
                    (string-downcase (package-name package))
                    documentation)
-           (dolist (route routes)
+           (dolist (route (sort-route-data routes))
              (destructuring-bind (template method content-type documentation symbol)
                  route
                (declare (ignore content-type documentation symbol))
@@ -105,7 +114,7 @@ parameters.")
           (:h4 "Module" (string-downcase (package-name package)))
           (:p (if documentation (:raw (markdown documentation) "")))
           (:ul 
-           (dolist (route routes)
+           (dolist (route (sort-route-data routes))
              (destructuring-bind (template method content-type documentation symbol)
                  route
                (declare (ignore content-type documentation))
