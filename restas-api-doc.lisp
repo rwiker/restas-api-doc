@@ -2,28 +2,67 @@
 
 (in-package #:restas-api-doc)
 
-(defvar *route-example-uris*
+(defvar *route-example-bindings*
   (make-hash-table :test 'eq)
   "Mapping from symbol denoting routes one or more example uris for the route.
 Each example uri may be either a string or a lambda expression that takes no
 parameters.")
 
-(defun render-example-uri (uri)
-  (cond ((null uri)
-         nil
-         (stringp uri)
-         uri)
-        ((functionp uri)
-         (funcall uri))
-        (t (error "Invalid argument to render-example-uri: ~a" uri))))
+(defun find-route (symbol)
+  (let ((root-module
+         (loop for module = *module* then parent
+               for parent = (restas::module-parent module)
+               while parent
+               finally (return module))))
+    (loop with hash-table = (slot-value root-module 'restas::routes)
+          for route being the hash-value of hash-table
+          when (eq (route-symbol route) symbol)
+          return route)))
+
+(defun render-example-uri (symbol)
+  (multiple-value-bind (bindings found-p)
+      (gethash symbol *route-example-bindings*)
+    (and found-p
+         (let* ((route (find-route symbol))
+                (template (routes:route-template route)))
+           (make-route-url template
+                           (loop for (key val . nil) on bindings by 'cddr
+                                 nconc (list key (if (and (symbolp val)
+                                                          (fboundp val))
+                                                   (funcall val)
+                                                   val))))))))
 
 (restas:define-declaration :example-uri :route (declarations target traits)
-  (let* ((declaration (first declarations)))
-    (setf (gethash target *route-example-uris*)
-          (if (and (listp declaration)
-                   (eq (first declaration) 'lambda))
-              (compile nil declaration)
-              declaration))))
+  (assert (and (evenp (length declarations))))
+  (assert (every (lambda (k) (and (symbolp k) (keywordp k)))
+                 (loop for k in declarations by 'cddr
+                       collect k)))
+  (setf (gethash target *route-example-bindings*)
+        declarations))
+
+(defmethod as-url-component ((template string))
+  template)
+
+(defmethod as-url-component ((template symbol))
+  (format nil "{~a}" (cl-json:lisp-to-camel-case (symbol-name template))))
+
+(defmethod as-url-component ((template routes:concat-template))
+  (apply 'concatenate 'string (mapcar 'as-url-component (routes:template-data template))))
+
+(defmethod as-url-component ((template routes:variable-template))
+  (as-url-component (routes:template-data template)))
+
+(defmethod as-url-component ((template routes:wildcard-template))
+  "*")
+
+(defmethod as-url-component ((template list))
+  (mapcar 'as-url-component template))
+
+(defun as-url (what)
+  (let ((uri (make-instance 'puri:uri)))
+    (setf (puri:uri-parsed-path uri)
+          (cons :absolute (as-url-component what)))
+    (puri:render-uri uri nil)))
 
 (defun route-compare (a b)
   (destructuring-bind (template-a method-a &rest rest-a)
@@ -32,40 +71,47 @@ parameters.")
     (destructuring-bind (template-b method-b &rest rest-b)
         b
       (declare (ignore rest-b))
-      (cond ((string-lessp template-a template-b)
-             t)
-            ((and (string-equal template-b template-a)
-                  (string-lessp (string method-a) (string method-b)))
-             t)
-            (t
-             nil)))))
+      (let ((url/a (as-url template-a))
+            (url/b (as-url template-b)))
+        (cond ((string-lessp url/a url/b)
+               t)
+              ((and (string-equal url/a url/b)
+                    (string-lessp (string method-a) (string method-b)))
+               t)
+              (t
+               nil))))))
 
 (defun sort-route-data (route-data)
   (sort route-data 'route-compare))
 
-(defun collect-route-info (routes-traits)
-  (loop for symbol being the hash-key of routes-traits
-              using (hash-value traits)
-              for documentation = (documentation symbol 'function)
-              for method = (gethash :method traits)
-              for content-type = (gethash :content-type traits)
-              for template = (gethash :template traits)
-              collect (list template method content-type documentation symbol)))
+(defmethod routes:proxy-route-target ((route t))
+  route)
+
+(defun collect-route-info (routes)
+  (loop for route in routes
+        for real-route = (routes:proxy-route-target route)
+        for symbol = (route-symbol real-route)
+        for documentation = (documentation symbol 'function)
+        for method = (restas::route-required-method real-route)
+        for content-type = (cadr (member :content-type (restas::route-headers real-route)))
+        for template = (routes:route-template real-route)
+        collect (list template method content-type documentation symbol)))
 
 (defun collect-api-doc/vhost (host port)
   (let ((vhost (find-vhost (cons host port))))
     (when vhost
       (loop for module in (slot-value vhost 'modules)
-            for package = (slot-value module 'package)
-            nconc (collect-api-doc/module package)))))
+            nconc (collect-api-doc/module module)))))
 
-(defun collect-api-doc/module (package)
-  (let* ((package (find-package package))
+(defun collect-api-doc/module (module)
+  (let* ((package (slot-value module 'package))
          (package-documentation (documentation package t))
-         (routes-traits (pkgmodule-traits-routes package))
-         (name (package-name package))
-         (route-info (ignore-errors (collect-route-info routes-traits))))
-    (list (list name package-documentation route-info))))
+         (routes (slot-value module 'restas::routes))
+         (filtered-routes (loop for route being the hash-value of routes
+                                when (or t (eq (restas::route-module route) module))
+                                collect route))
+         (route-info (collect-route-info filtered-routes)))
+    (list (list package package-documentation route-info))))
 
 (defun markdown (string)
   (with-output-to-string (s)
@@ -92,8 +138,8 @@ parameters.")
              (destructuring-bind (template method content-type documentation symbol)
                  route
                (declare (ignore content-type documentation symbol))
-               (let ((doc-uri (format nil "~a/~a" method (cl-base64:string-to-base64-string template :uri t))))
-                 (format stream "* ~a [/~a](~a)~%" method template doc-uri))))))))))
+               (let ((doc-uri (format nil "~a/~a" method (cl-base64:string-to-base64-string (as-url template) :uri t))))
+                 (format stream "* ~a [~a](~a)~%" method (hunchentoot:url-decode (as-url template)) doc-uri))))))))))
 
 #+nil
 (defmacro with-page ((&key title) &body body)
@@ -137,7 +183,7 @@ parameters.")
                                       (declare (ignore r-content-type r-documentation r-symbol))
                                       (when
                                           (and (string= method r-method)
-                                               (string= template r-template))
+                                               (string= template (as-url r-template)))
                                         item)))
                                   module-routes)
         when route-info
@@ -148,12 +194,12 @@ parameters.")
     (let ((route-info (get-route-info doc method template)))
       (destructuring-bind (template method content-type documentation symbol)
           route-info
-        (let ((example-uri (render-example-uri (gethash symbol *route-example-uris*))))
+        (let ((example-uri (render-example-uri symbol)))
           (concatenate
            'string
            (markdown
             (format nil "#### Route:~%~%`~a`~%~%##### Method:~%~%~a~%~%##### Returns:~%~%~a~%~%##### Description:~%~%~a"
-                    template method content-type (or documentation "")))
+                    (hunchentoot:url-decode (as-url template)) method content-type (or documentation "")))
            (when example-uri
              (if (eq method :get)
                  (format nil "~%~%Try it: <a href=\"~a\">~:*~a</a>" example-uri)
@@ -165,7 +211,7 @@ parameters.")
     (let ((route-info (get-route-info doc method template)))
       (destructuring-bind (template method content-type documentation)
           route-info
-        (with-page (:title (format nil "Route: ~a" template))
+        (with-page (:title (format nil "Route: ~a" (as-url template)))
           (:h4 "Route:")
           (:code template)
           (:h5 "Method:")
