@@ -40,11 +40,28 @@ parameters.")
   (setf (gethash target *route-example-bindings*)
         declarations))
 
+(defun symbol-name-as-camel-case (symbol)
+  (with-output-to-string (str)
+    (loop with symbol-name = (symbol-name symbol)
+          for upcase-p = nil then is-hyphen
+          for char across symbol-name
+          for is-hyphen = (char= char #\-)
+          unless is-hyphen
+          do (write-char
+              (if upcase-p
+                (char-upcase char)
+                (char-downcase char))
+              str))))
+
+#||
+(symbol-name-as-camel-case '----symbol-name-as-0camel-case-)
+||#
+
 (defmethod as-url-component ((template string))
   template)
 
 (defmethod as-url-component ((template symbol))
-  (format nil "{~a}" (cl-json:lisp-to-camel-case (symbol-name template))))
+  (format nil "{~a}" (symbol-name-as-camel-case template)))
 
 (defmethod as-url-component ((template routes:concat-template))
   (apply 'concatenate 'string (mapcar 'as-url-component (routes:template-data template))))
