@@ -89,7 +89,9 @@ parameters.")
 
 (defun collect-route-info (routes)
   (loop for route in routes
-        for real-route = (routes:proxy-route-target route)
+        for real-route = (loop for rt = route then (routes:proxy-route-target rt)
+                               while (typep rt 'routes:proxy-route)
+                               finally (return rt))
         for symbol = (route-symbol real-route)
         for documentation = (documentation symbol 'function)
         for method = (restas::route-required-method real-route)
