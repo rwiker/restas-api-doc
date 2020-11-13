@@ -6,6 +6,6 @@
   :license  "Specify license here"
   :version "0.0.1"
   :serial t
-  :depends-on (restas 3bmd #+nil spinneret)
+  :depends-on (restas 3bmd cl-json #+nil spinneret)
   :components ((:file "package")
                (:file "restas-api-doc")))
